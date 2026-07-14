@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from dynanchor import DensityAnchorRouter, DynamicKNNGraph, MedoidRouter, RandomAnchorRouter
+from dynanchor.data import make_streaming_drift_scenario
+from dynanchor.evaluation import evaluate_router
+
+
+def build_routers(anchor_count: int, entry_count: int, seed: int):
+    return [
+        MedoidRouter(),
+        RandomAnchorRouter(m=anchor_count, s=entry_count, seed=seed + 11),
+        DensityAnchorRouter(m=anchor_count, s=entry_count, dynamic=False),
+        DensityAnchorRouter(m=anchor_count, s=entry_count, dynamic=True),
+    ]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Sweep ef to build recall-cost curves.")
+    parser.add_argument("--efs", default="20,40,60,90,120,180")
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--n-initial", type=int, default=900)
+    parser.add_argument("--n-insert", type=int, default=240)
+    parser.add_argument("--n-delete", type=int, default=120)
+    parser.add_argument("--n-queries", type=int, default=240)
+    parser.add_argument("--dim", type=int, default=16)
+    parser.add_argument("--graph-k", type=int, default=14)
+    parser.add_argument("--topk", type=int, default=10)
+    parser.add_argument("--anchors", type=int, default=32)
+    parser.add_argument("--entries", type=int, default=4)
+    parser.add_argument("--out-dir", type=Path, default=ROOT / "results")
+    args = parser.parse_args()
+
+    efs = [int(x.strip()) for x in args.efs.split(",") if x.strip()]
+    rows = []
+    maintenance_by_ef = {}
+
+    for ef in efs:
+        scenario = make_streaming_drift_scenario(
+            n_initial=args.n_initial,
+            n_insert=args.n_insert,
+            n_delete=args.n_delete,
+            n_queries=args.n_queries,
+            dim=args.dim,
+            seed=args.seed,
+        )
+        graph = DynamicKNNGraph(scenario.initial, k=args.graph_k, seed=args.seed)
+        routers = build_routers(args.anchors, args.entries, args.seed)
+        for router in routers:
+            router.fit(graph)
+
+        for router in routers:
+            row = evaluate_router(
+                graph,
+                router,
+                scenario.queries_before,
+                phase="before_drift",
+                k=args.topk,
+                ef=ef,
+                s=args.entries,
+            ).to_dict()
+            row["ef"] = ef
+            rows.append(row)
+
+        for batch in scenario.insert_batches:
+            graph.insert(batch)
+        graph.delete(scenario.delete_ids)
+
+        maintenance_by_ef[str(ef)] = {}
+        for router in routers:
+            reports = [router.maintain(graph) for _ in range(3)]
+            maintenance_by_ef[str(ef)][router.name] = reports
+
+        for router in routers:
+            row = evaluate_router(
+                graph,
+                router,
+                scenario.queries_after,
+                phase="after_drift",
+                k=args.topk,
+                ef=ef,
+                s=args.entries,
+            ).to_dict()
+            row["ef"] = ef
+            rows.append(row)
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = args.out_dir / "ef_sweep_results.json"
+    csv_path = args.out_dir / "ef_sweep_results.csv"
+    payload = {
+        "config": vars(args) | {"out_dir": str(args.out_dir), "efs": efs},
+        "maintenance": maintenance_by_ef,
+        "results": rows,
+    }
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"Wrote {json_path}")
+    print(f"Wrote {csv_path}")
+    for row in rows:
+        if row["phase"] != "after_drift":
+            continue
+        print(
+            f"ef={row['ef']:3d} {row['router']:16s} "
+            f"recall={row['recall_at_k']:.3f} visited={row['avg_visited']:.1f} "
+            f"p99_ms={row['p99_latency_ms']:.3f}"
+        )
+
+
+if __name__ == "__main__":
+    main()

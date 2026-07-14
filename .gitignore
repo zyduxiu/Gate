@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.venv/
+build/
+
+# Large generated datasets, indexes, model checkpoints, and benchmark outputs.
+data/
+results/
+results*
+tempfolder/
+Recall-result.out
+
+# External build outputs and downloaded artifacts.
+third_party/*.zip
+third_party/DiskANN/
+third_party/NGFix/
+third_party/SPTAG/
+third_party/Steiner-hardness/
+third_party/hnswlib/
+third_party/nsg/
+third_party/**/build/
+third_party/**/target/
+third_party/**/__pycache__/
+third_party/**/workloads/
+third_party/**/*.pth
+third_party/**/*.index
+third_party/**/*.bin
+third_party/**/*.fbin
+third_party/**/*.fvecs
+third_party/**/*.ivecs
+third_party/**/*.graph
+third_party/**/*.data
+third_party/**/*.dwp
